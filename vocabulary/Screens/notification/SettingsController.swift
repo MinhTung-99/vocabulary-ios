@@ -155,25 +155,15 @@ private final class DatePickerCell: UITableViewCell {
 final class SettingsController: UITableViewController {
 
     private enum Section: Int, CaseIterable {
-        case enabled, list, timeRange, interval, wordsPerDay
+        case enabled, list, timeRange, interval
     }
 
-    private enum DefaultsKey {
-        static let notificationsEnabled = "settings.notificationsEnabled"
-        static let selectedSectionKey = "settings.selectedSectionKey"
-        static let intervalMinutes = "settings.intervalMinutes"
-        static let wordsPerDay = "settings.wordsPerDay"
-        static let startHour = "settings.startHour"
-        static let startMinute = "settings.startMinute"
-        static let endHour = "settings.endHour"
-        static let endMinute = "settings.endMinute"
-    }
+    private typealias DefaultsKey = SettingsDefaultsKey
 
     private let sections: [VocabularySection]
     private var notificationsEnabled: Bool
-    private var selectedSectionKey: String?
+    private var selectedSectionKeys: Set<String>
     private var intervalMinutes: Int
-    private var wordsPerDay: Int
     private var startTime: Date
     private var endTime: Date
 
@@ -187,13 +177,11 @@ final class SettingsController: UITableViewController {
 
         let defaults = UserDefaults.standard
         self.notificationsEnabled = defaults.object(forKey: DefaultsKey.notificationsEnabled) as? Bool ?? false
-        self.selectedSectionKey = defaults.string(forKey: DefaultsKey.selectedSectionKey) ?? sections.first?.key
+        let savedKeys = Set(DefaultsKey.savedSectionKeys(defaults)).intersection(sections.map(\.key))
+        self.selectedSectionKeys = savedKeys.isEmpty ? Set(sections.prefix(1).map(\.key)) : savedKeys
 
         let savedInterval = defaults.integer(forKey: DefaultsKey.intervalMinutes)
         self.intervalMinutes = savedInterval > 0 ? savedInterval : 60
-
-        let savedWordsPerDay = defaults.integer(forKey: DefaultsKey.wordsPerDay)
-        self.wordsPerDay = savedWordsPerDay > 0 ? savedWordsPerDay : 5
 
         let calendar = Calendar.current
         func time(hourKey: String, minuteKey: String, defaultHour: Int, defaultMinute: Int) -> Date {
@@ -236,7 +224,6 @@ final class SettingsController: UITableViewController {
         case .list: return "Danh sách từ vựng"
         case .timeRange: return "Khung giờ nhận thông báo"
         case .interval: return "Tần suất thông báo"
-        case .wordsPerDay: return "Số từ mỗi ngày"
         }
     }
 
@@ -245,7 +232,7 @@ final class SettingsController: UITableViewController {
         case .enabled: return 1
         case .list: return sections.isEmpty ? 1 : sections.count
         case .timeRange: return 2
-        case .interval, .wordsPerDay: return 1
+        case .interval: return 1
         }
     }
 
@@ -271,7 +258,7 @@ final class SettingsController: UITableViewController {
                 let section = sections[indexPath.row]
                 content.text = section.key
                 content.secondaryText = "\(section.items.count) từ"
-                cell.accessoryType = section.key == selectedSectionKey ? .checkmark : .none
+                cell.accessoryType = selectedSectionKeys.contains(section.key) ? .checkmark : .none
                 cell.selectionStyle = .default
             }
             cell.contentConfiguration = content
@@ -303,28 +290,19 @@ final class SettingsController: UITableViewController {
                 tableView.reloadRows(at: [indexPath], with: .none)
             }
             return cell
-
-        case .wordsPerDay:
-            let cell = tableView.dequeueReusableCell(withIdentifier: stepperCellID, for: indexPath) as! StepperCell
-            cell.configure(
-                title: "\(wordsPerDay) từ / ngày",
-                value: Double(wordsPerDay),
-                range: 1...50,
-                step: 1
-            ) { [weak self] newValue in
-                guard let self else { return }
-                self.wordsPerDay = Int(newValue)
-                tableView.reloadRows(at: [indexPath], with: .none)
-            }
-            return cell
         }
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         guard Section(rawValue: indexPath.section) == .list, !sections.isEmpty else { return }
-        selectedSectionKey = sections[indexPath.row].key
-        tableView.reloadSections(IndexSet(integer: Section.list.rawValue), with: .none)
+        let key = sections[indexPath.row].key
+        if selectedSectionKeys.contains(key) {
+            selectedSectionKeys.remove(key)
+        } else {
+            selectedSectionKeys.insert(key)
+        }
+        tableView.reloadRows(at: [indexPath], with: .none)
     }
 
     @objc private func saveTapped() {
@@ -337,23 +315,30 @@ final class SettingsController: UITableViewController {
             return
         }
 
-        guard let selectedSectionKey,
-              let section = sections.first(where: { $0.key == selectedSectionKey }) else {
-            showAlert(message: "Vui lòng chọn danh sách từ vựng.")
+        // Keep the lists in their on-screen order.
+        let selected = sections.filter { selectedSectionKeys.contains($0.key) }
+        guard !selected.isEmpty else {
+            showAlert(message: "Vui lòng chọn ít nhất một danh sách từ vựng.")
             return
         }
+        let names = selected.map(\.key).joined(separator: ", ")
 
         let calendar = Calendar.current
         let startComponents = calendar.dateComponents([.hour, .minute], from: startTime)
         let endComponents = calendar.dateComponents([.hour, .minute], from: endTime)
 
-        defaults.set(selectedSectionKey, forKey: DefaultsKey.selectedSectionKey)
+        defaults.set(selected.map(\.key), forKey: DefaultsKey.selectedSectionKeys)
         defaults.set(intervalMinutes, forKey: DefaultsKey.intervalMinutes)
-        defaults.set(wordsPerDay, forKey: DefaultsKey.wordsPerDay)
         defaults.set(startComponents.hour, forKey: DefaultsKey.startHour)
         defaults.set(startComponents.minute, forKey: DefaultsKey.startMinute)
         defaults.set(endComponents.hour, forKey: DefaultsKey.endHour)
         defaults.set(endComponents.minute, forKey: DefaultsKey.endMinute)
+
+        guard !NotificationManager.shared.unlearnedEntries(in: selected).isEmpty else {
+            NotificationManager.shared.cancelAllScheduled()
+            showAlert(message: "Bạn đã thuộc hết các từ trong \(names), không còn từ nào để nhắc.")
+            return
+        }
 
         NotificationManager.shared.requestAuthorization { [weak self] granted in
             guard let self else { return }
@@ -362,15 +347,15 @@ final class SettingsController: UITableViewController {
                 return
             }
             let times = NotificationManager.shared.scheduleNotifications(
-                words: section.items,
+                sections: selected,
                 intervalMinutes: self.intervalMinutes,
-                wordsPerDay: self.wordsPerDay,
                 startHour: startComponents.hour ?? 8,
                 startMinute: startComponents.minute ?? 0,
                 endHour: endComponents.hour ?? 23,
                 endMinute: endComponents.minute ?? 0
             )
-            self.showAlert(message: "Đã bật thông báo cho \"\(section.key)\" lúc: \(times.joined(separator: ", "))")
+            let range = [times.first, times.last].compactMap { $0 }.joined(separator: " – ")
+            self.showAlert(message: "Đã bật thông báo cho \(names): \(times.count) lần/ngày (\(range)), mỗi \(self.intervalMinutes) phút.")
         }
     }
 

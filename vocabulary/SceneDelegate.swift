@@ -30,8 +30,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             selectedImage: UIImage(systemName: "text.book.closed.fill")
         )
 
+        let rememberedNav = UINavigationController(rootViewController: RememberedController())
+        rememberedNav.tabBarItem = UITabBarItem(
+            title: "Remembered",
+            image: UIImage(systemName: "checkmark.circle"),
+            selectedImage: UIImage(systemName: "checkmark.circle.fill")
+        )
+
         let tabBarController = UITabBarController()
-        tabBarController.viewControllers = [vocabularyNav, grammarNav]
+        tabBarController.viewControllers = [vocabularyNav, grammarNav, rememberedNav]
 
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = tabBarController

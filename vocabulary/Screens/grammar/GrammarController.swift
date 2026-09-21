@@ -140,7 +140,12 @@ class GrammarController: UIViewController {
     private let activityIndicator = UIActivityIndicatorView(style: .large)
     private let emptyStateLabel = UILabel()
 
+    private let searchController = UISearchController(searchResultsController: nil)
+
+    private var allTopics: [GrammarTopic] = []
+    private var searchTexts: [String] = []
     private var topics: [GrammarTopic] = []
+    private var searchQuery = ""
     private var expandedSections: Set<Int> = []
     private var measuredHeights: [Int: CGFloat] = [:]
     private var heightDelegates: [Int: WebViewHeightDelegate] = [:]
@@ -156,6 +161,7 @@ class GrammarController: UIViewController {
         setupTableView()
         setupActivityIndicator()
         setupEmptyState()
+        setupSearch()
 
         loadGrammar()
     }
@@ -177,6 +183,39 @@ class GrammarController: UIViewController {
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+    }
+
+    private func setupSearch() {
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.placeholder = "Tìm ngữ pháp"
+        searchController.searchResultsUpdater = self
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
+        definesPresentationContext = true
+    }
+
+    private static func plainText(fromHTML html: String) -> String {
+        html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+    }
+
+    private func applyFilter() {
+        if searchQuery.isEmpty {
+            topics = allTopics
+        } else {
+            let options: String.CompareOptions = .caseInsensitive
+            topics = allTopics.enumerated().compactMap { index, topic in
+                let hit = topic.title.range(of: searchQuery, options: options) != nil
+                    || searchTexts[index].range(of: searchQuery, options: options) != nil
+                return hit ? topic : nil
+            }
+        }
+        expandedSections = []
+        measuredHeights = [:]
+        heightDelegates = [:]
+        tableView.reloadData()
+        tableView.isHidden = topics.isEmpty
+        emptyStateLabel.text = searchQuery.isEmpty ? "Chưa có nội dung ngữ pháp" : "Không tìm thấy kết quả"
+        emptyStateLabel.isHidden = !topics.isEmpty
     }
 
     private func setupActivityIndicator() {
@@ -216,12 +255,9 @@ class GrammarController: UIViewController {
 
             switch result {
             case .success(let topics):
-                self.topics = topics
-                self.expandedSections = []
-                self.measuredHeights = [:]
-                self.tableView.reloadData()
-                self.tableView.isHidden = !topics.isEmpty ? false : true
-                self.emptyStateLabel.isHidden = !topics.isEmpty ? true : false
+                self.allTopics = topics
+                self.searchTexts = topics.map { Self.plainText(fromHTML: $0.html) }
+                self.applyFilter()
 
             case .failure(let error):
                 self.tableView.isHidden = true
@@ -323,6 +359,15 @@ extension GrammarController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
         measuredHeights[indexPath.section] ?? defaultContentHeight
+    }
+}
+
+extension GrammarController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        let query = (searchController.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query != searchQuery else { return }
+        searchQuery = query
+        applyFilter()
     }
 }
 

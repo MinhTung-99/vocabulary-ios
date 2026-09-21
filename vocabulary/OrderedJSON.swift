@@ -38,24 +38,38 @@ indirect enum JSONValue {
 }
 
 extension JSONValue {
-    /// Best-effort (title, body) for a notification, using a "word" field (plus
-    /// "part_of_speech" when present) as the title, falling back to the item's raw
-    /// display otherwise.
+    /// Text used by search: only the "word" and meaning fields (not IPA, part of speech or example
+    /// sentences, which mention other words), one per line so a query can't span two fields.
+    /// Falls back to every value when an object has none of those fields.
+    var searchableText: String {
+        switch self {
+        case .object(let pairs):
+            let searchKeys: Set<String> = ["word", "mean", "meaning"]
+            let focused = pairs.filter { searchKeys.contains($0.key.lowercased()) }
+            return (focused.isEmpty ? pairs : focused).map { $0.value.searchableText }.joined(separator: "\n")
+        case .array(let items):
+            return items.map { $0.searchableText }.joined(separator: "\n")
+        default:
+            return displayString
+        }
+    }
+
     var notificationContent: (title: String, body: String) {
         guard case .object(let pairs) = self else {
             return ("Từ vựng", displayString)
         }
 
-        let wordPair = pairs.first { $0.key.lowercased() == "word" }
-        var title = wordPair?.value.displayString ?? pairs.first?.value.displayString ?? "Từ vựng"
-        if let partOfSpeech = pairs.first(where: { $0.key.lowercased() == "part_of_speech" })?.value.displayString,
-           !partOfSpeech.isEmpty {
-            title += " - \(partOfSpeech)"
-        }
+        let partOfSpeech = pairs.first { $0.key.lowercased() == "part_of_speech" }?.value.displayString
+        let title = (partOfSpeech?.isEmpty == false) ? partOfSpeech! : "Từ vựng"
 
-        let excludedKeys: Set<String> = ["word", "part_of_speech"]
-        let remaining = pairs.filter { !excludedKeys.contains($0.key.lowercased()) }
-        let body = remaining.map { $0.value.displayString }.joined(separator: " · ")
+        let excludedKeys: Set<String> = ["part_of_speech", "example"]
+        let values = pairs.filter { !excludedKeys.contains($0.key.lowercased()) }.map { $0.value.displayString }
+        let body: String
+        if values.count > 1 {
+            body = values[0] + "\n" + values[1...].joined(separator: " - ")
+        } else {
+            body = values.first ?? ""
+        }
         return (title, body.isEmpty ? displayString : body)
     }
 
@@ -219,5 +233,47 @@ struct JSONParser {
         }
         guard let value = Double(text) else { throw JSONParseError.invalidNumber(text) }
         return .number(value)
+    }
+}
+
+extension JSONValue {
+    /// Compact JSON text that keeps object key order.
+    var jsonString: String {
+        switch self {
+        case .string(let value):
+            return Self.quoted(value)
+        case .number, .bool:
+            return displayString
+        case .null:
+            return "null"
+        case .array(let items):
+            return "[" + items.map { $0.jsonString }.joined(separator: ",") + "]"
+        case .object(let pairs):
+            return "{" + pairs.map { Self.quoted($0.key) + ":" + $0.value.jsonString }.joined(separator: ",") + "}"
+        }
+    }
+
+    private static func quoted(_ string: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: string, options: .fragmentsAllowed),
+              let text = String(data: data, encoding: .utf8) else { return "\"\"" }
+        return text
+    }
+
+    /// The vocabulary word this item is keyed by: its "word" field, else its first field.
+    var wordText: String {
+        guard case .object(let pairs) = self, !pairs.isEmpty else { return displayString }
+        return (pairs.first { $0.key.lowercased() == "word" } ?? pairs[0]).value.displayString
+    }
+
+    /// Fields in the usual reading order (word, part of speech, IPA, meaning, example, then the rest).
+    /// Realtime Database returns object keys alphabetically, so stored words are put back in this order.
+    var withCanonicalFieldOrder: JSONValue {
+        guard case .object(let pairs) = self else { return self }
+        let order = ["word", "part_of_speech", "ipa", "mean", "meaning", "example"]
+        func rank(_ key: String) -> Int { order.firstIndex(of: key.lowercased()) ?? order.count }
+        let sorted = pairs.enumerated()
+            .sorted { (rank($0.element.key), $0.offset) < (rank($1.element.key), $1.offset) }
+            .map { $0.element }
+        return .object(sorted)
     }
 }

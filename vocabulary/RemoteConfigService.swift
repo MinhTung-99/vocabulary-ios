@@ -82,9 +82,8 @@ final class RemoteConfigService {
     private static func makeSections(from root: JSONValue) -> [VocabularySection] {
         switch root {
         case .object(let pairs):
-            return pairs
-                .map { VocabularySection(key: $0.key, items: itemsArray(from: $0.value)) }
-                .sorted { ($0.dayNumber ?? .max, $0.key) < ($1.dayNumber ?? .max, $1.key) }
+            // Keep the JSON's own key order.
+            return pairs.map { VocabularySection(key: $0.key, items: itemsArray(from: $0.value)) }
         case .array(let items):
             return [VocabularySection(key: "all", items: items)]
         default:
